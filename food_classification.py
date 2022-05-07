@@ -3,28 +3,20 @@
 
 from IPython.terminal.interactiveshell import TerminalInteractiveShell
 import random
-import glob
 import os
 import numpy as np
-import cv2
-from matplotlib import pyplot as plt
 from tqdm.notebook import tqdm
-import matplotlib
-import matplotlib.font_manager as fm
 from typing import Dict, List, Tuple
 import pandas as pd
 
 import torch
-import torch.nn.functional as F
 import torch.nn as nn
 import torch.optim as optim
 import torch.cuda.amp as amp
-from torch.utils.data import DataLoader, Dataset, Subset, WeightedRandomSampler
+from torch.utils.data import DataLoader, Subset, WeightedRandomSampler
 from torchvision.datasets import ImageFolder
 from torchvision import transforms
 from torchvision import models as models
-from sklearn.metrics import confusion_matrix
-from sklearn.model_selection import train_test_split
 import timm
 from timm.data.auto_augment import rand_augment_transform
 import madgrad
@@ -34,15 +26,12 @@ import madgrad
 
 shell = TerminalInteractiveShell.instance()
 shell.system('nvidia-smi')
-# shell.system('wget  -O chula-food-50.zip https://piclab.ai/classes/cv2021/Chula-food-50.zip')
-# shell.system('unzip -qo chula-food-50.zip')
-
 
 ### Config & Device
 
 config = {
-    "model_name": 'convnext_base_384_in22ft1k',
-    "dropout": 0.2,
+    "model_name": 'convnext_large_384_in22ft1k',
+    "dropout": 0.4,
     "batch_size": 16,
     "image_size": (384, 384),
     "seed": 42,
@@ -50,8 +39,8 @@ config = {
     "min_sample_per_class": 60,
     "val_length": 15,
     "test_length": 15,
-    "num_workers": 2,
-    "num_epochs": 15,
+    "num_workers": 4,
+    "num_epochs": 25,
     "weight_filepath": os.path.join(os.path.dirname(os.path.realpath(__file__)), 'model_weight.pt'),
     "result_filepath": os.path.join(os.path.dirname(os.path.realpath(__file__)), 'result.csv'),
 }
@@ -119,7 +108,6 @@ def get_train_val_test_indices(dataset, random_state=None):
     test_length = config["test_length"]
     val_test_length = val_length + test_length
 
-    # Create a list of indices we will use as validation and test set
     val_test_indices = (
         df_dataset.groupby("class_idx")
         .sample(n=val_test_length, random_state=random_state)
@@ -152,7 +140,6 @@ def get_weighted_random_sampler(train_dataset, train_indices):
         generator=torch.Generator().manual_seed(config["seed"]),
     )
     return sampler
-
 
 ### Transform (have augment for train but no augment for validation and test)
 
@@ -227,18 +214,15 @@ test_loader = DataLoader(
     pin_memory=True,
 )
 
-
 ### Model
 
 class foodNet(nn.Module):
   def __init__(self, num_classes):
     super(foodNet, self).__init__()
-    ### Layers goes here ###
     self.pretrained_model = timm.create_model(config["model_name"], pretrained=True, drop_rate=config["dropout"])
     self.pretrained_model.head.fc = nn.Linear(self.pretrained_model.head.fc.in_features, num_classes)
 
   def forward(self, input):
-    ### Connections goes here ###
     x = self.pretrained_model(input)
     return x
     
@@ -247,63 +231,40 @@ print(f'\nNumber of class: {len(train_dataset.classes)}')
 
 model = foodNet(len(train_dataset.classes))
 
+# # uncomment for second training
+# model.load_state_dict(torch.load(config["weight_filepath"], map_location=device))
+
 for parameter in model.pretrained_model.parameters():
     parameter.requires_grad_(False)
 
 for parameter in model.pretrained_model.head.parameters():
     parameter.requires_grad_(True)
 
-model.to(device)
+## uncomment for second training
 
+# for parameter in model.pretrained_model.stages[2].blocks[14:].parameters():
+#     parameter.requires_grad_(True)
+
+# for parameter in model.pretrained_model.stages[3].parameters():
+#     parameter.requires_grad_(True)
+
+model.to(device)
 
 ### Loss function / Optimizer / Scheduler
 
 criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 optimizer = madgrad.MADGRAD(filter(lambda p: p.requires_grad, model.parameters()), lr=5e-5)
-# optimizer = optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()))
 scheduler = optim.lr_scheduler.CosineAnnealingLR(
   optimizer=optimizer, 
-  T_max=config["num_epochs"],
-  eta_min=1e-7,
+  T_max=config["num_epochs"]-1,
+  eta_min=5e-7,
   verbose=True
 )
-# scheduler = optim.lr_scheduler.CyclicLR(
-#     optimizer=optimizer,
-#     base_lr=1e-6,
-#     max_lr=5e-5,
-#     step_size_up= 4 * len(train_split) // BATCH_SIZE,
-#     cycle_momentum=False,
-# )
-
-
 
 ### Training model
 
 scaler = amp.GradScaler()
 ### Train, Validate and Test helper functions ###
-# def testModel(testDatasetLoader, net):
-#   net.eval()
-#   numClass = len(testDatasetLoader.dataset.dataset.classes)
-#   correctImagesPerClass = np.zeros(numClass)
-#   totalImagesPerClass = np.zeros(numClass)
-#   testingProgressbar = tqdm(enumerate(testDatasetLoader), total=len(testDatasetLoader), ncols=100)
-#   with torch.no_grad():
-#     for batchIdx, batchData in testingProgressbar:
-#       images, labels = batchData[0].to(device), batchData[1].to(device)
-      
-#       outputs = net(images)
-#       _, predicted = torch.max(outputs, 1)
-
-#       labels = labels.cpu().detach().numpy()
-#       predicted = predicted.cpu().detach().numpy()
-
-#       correctImagesPerClass += np.bincount(labels[labels==predicted], minlength=numClass)
-#       totalImagesPerClass += np.bincount(labels, minlength=numClass)
-
-#   accuracyPerClass = correctImagesPerClass / totalImagesPerClass
-#   accumulateAccuracy = round((correctImagesPerClass.sum().item()/totalImagesPerClass.sum().item())*100, 4)
-#   return accuracyPerClass, accumulateAccuracy
-
 def testModel(testDatasetLoader, net):
   net.eval()
   numClass = len(testDatasetLoader.dataset.dataset.classes)
@@ -347,9 +308,10 @@ def validateModel(valDatasetLoader, net):
       images, labels = batchData[0].to(device), batchData[1].to(device)
       sampleCount += len(images)
       
-      outputs = net(images)
-      loss = criterion(outputs, labels)
-      sumLoss += loss.item() * len(images)
+      with amp.autocast():
+        outputs = net(images)
+        loss = criterion(outputs, labels)
+        sumLoss += loss.item() * len(images)
 
       _, predicted = torch.max(outputs, 1)
       correctImages += (predicted == labels).sum().item()
@@ -377,10 +339,8 @@ def trainAndValidateModel(trainDatasetLoader, valDatasetLoader, net, optimizer,s
       images, labels = batchData[0].to(device), batchData[1].to(device)
       sampleCount += len(images)
 
-      # zero the parameter gradients
       optimizer.zero_grad()
 
-      # forward + backward + optimize
       with amp.autocast():
         outputs = net(images)
         loss = criterion(outputs, labels)
@@ -423,27 +383,7 @@ bestAccuracy, bestNet = trainAndValidateModel(
     config["num_epochs"],
 )
 
-# model.load_state_dict(torch.load(config["weight_filepath"], map_location=device))
-
-# for parameter in model.pretrained_model.stages[2:].parameters():
-#     parameter.requires_grad_(True)
-
-# for name, param in model.named_parameters():
-#   if param.requires_grad:
-#     print(name)
-
 # torch.cuda.empty_cache() 
-
-# bestAccuracy, bestNet = trainAndValidateModel(
-    # train_loader,
-    # val_loader,
-    # model,
-    # optimizer,
-    # scheduler,
-    # criterion,
-    # config["num_epochs"],
-# )
-
 
 ### Predict test dataset
 
