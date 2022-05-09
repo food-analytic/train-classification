@@ -234,15 +234,15 @@ model = foodNet(len(train_dataset.classes))
 # # uncomment for second training
 # model.load_state_dict(torch.load(config["weight_filepath"], map_location=device))
 
+# for first training
 for parameter in model.pretrained_model.parameters():
     parameter.requires_grad_(False)
 
 for parameter in model.pretrained_model.head.parameters():
     parameter.requires_grad_(True)
 
-## uncomment for second training
-
-# for parameter in model.pretrained_model.stages[2].blocks[14:].parameters():
+# # uncomment for second training
+# for parameter in model.pretrained_model.stages[2].blocks[20:].parameters():
 #     parameter.requires_grad_(True)
 
 # for parameter in model.pretrained_model.stages[3].parameters():
